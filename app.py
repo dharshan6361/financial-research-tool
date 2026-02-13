@@ -2,8 +2,9 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
+import io
 
-# Optional OCR imports (may not work on cloud)
+# ----- Optional OCR imports -----
 try:
     import pytesseract
     from pdf2image import convert_from_bytes
@@ -12,7 +13,7 @@ except:
     OCR_AVAILABLE = False
 
 
-# ---- local paths (used only if OCR available locally) ----
+# ----- Local-only OCR paths -----
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 POPLER_PATH = r"C:\poppler\poppler-25.12.0\Library\bin"
 
@@ -101,7 +102,7 @@ def extract_text_with_ocr(pdf_bytes, page_num):
         return pytesseract.image_to_string(images[0])
 
     except Exception:
-        st.info("OCR not available in this deployment environment — using text-only mode.")
+        st.info("OCR not available in this deployment — using text-only mode.")
         return None
 
 
@@ -109,11 +110,13 @@ def extract_text_with_ocr(pdf_bytes, page_num):
 
 if file and st.button("Run Income Statement Extraction"):
 
-    pdf_bytes = file.read()
+    pdf_bytes = file.read()   # read once
+
     all_rows = []
     raw_preview = ""
 
-    with pdfplumber.open(file) as pdf:
+    # ✅ FIX — open from bytes buffer, not file stream
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
 
         page_limit = min(len(pdf.pages), 12)
 
@@ -139,13 +142,13 @@ if file and st.button("Run Income Statement Extraction"):
             rows = extract_financial_lines(text, page_num)
             all_rows.extend(rows)
 
+
     # ---------- structured output ----------
 
     if all_rows:
 
         df = pd.DataFrame(all_rows)
 
-        # numeric clean
         df["value"] = df["value"].str.replace(",", "").astype(float)
 
         df = df.sort_values(["line_item", "page"])
@@ -163,7 +166,10 @@ if file and st.button("Run Income Statement Extraction"):
 
     else:
 
-        st.warning("Structured financial rows not detected.")
+        st.warning(
+            "No structured financial rows detected. "
+            "This PDF may be image-only. Cloud deployment runs without OCR."
+        )
 
         if raw_preview:
             st.subheader("Raw Extracted Text Preview")
@@ -174,8 +180,6 @@ if file and st.button("Run Income Statement Extraction"):
                 raw_preview,
                 "raw_text.txt"
             )
-        else:
-            st.error("No readable text found in this PDF.")
 
 
 # ---------- limitation note ----------
@@ -188,5 +192,5 @@ st.markdown("""
 • Scanned tables may have partial structure  
 • First ~12 pages processed for speed  
 • Values are copied exactly — no guessing or hallucination  
-• Output keeps source text and page reference for verification
+• Source text and page number are preserved for verification
 """)
