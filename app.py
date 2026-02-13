@@ -2,13 +2,26 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
-import pytesseract
-from pdf2image import convert_from_bytes
 
-# ---- set tesseract path (Windows) ----
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# Optional OCR imports (may not work on cloud)
+try:
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    OCR_AVAILABLE = True
+except:
+    OCR_AVAILABLE = False
 
+
+# ---- local paths (used only if OCR available locally) ----
+TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 POPLER_PATH = r"C:\poppler\poppler-25.12.0\Library\bin"
+
+if OCR_AVAILABLE:
+    try:
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+    except:
+        OCR_AVAILABLE = False
+
 
 st.title("Financial Statement Extraction Tool")
 st.caption("Extract income-statement style line items from financial PDFs into analyst-ready CSV.")
@@ -19,6 +32,7 @@ file = st.file_uploader("Upload Financial PDF", type=["pdf"])
 # ---------- normalization ----------
 
 def normalize_name(line):
+
     l = line.lower()
 
     if "revenue" in l or "total income" in l:
@@ -39,7 +53,7 @@ def normalize_name(line):
     return line.strip()
 
 
-# ---------- extraction logic ----------
+# ---------- extraction ----------
 
 def extract_financial_lines(text, page_num):
 
@@ -68,19 +82,27 @@ def extract_financial_lines(text, page_num):
     return rows
 
 
-# ---------- OCR fallback ----------
+# ---------- OCR fallback (safe) ----------
 
 def extract_text_with_ocr(pdf_bytes, page_num):
 
-    images = convert_from_bytes(
-        pdf_bytes,
-        first_page=page_num,
-        last_page=page_num,
-        dpi=300,
-        poppler_path=POPLER_PATH
-    )
+    if not OCR_AVAILABLE:
+        return None
 
-    return pytesseract.image_to_string(images[0])
+    try:
+        images = convert_from_bytes(
+            pdf_bytes,
+            first_page=page_num,
+            last_page=page_num,
+            dpi=300,
+            poppler_path=POPLER_PATH
+        )
+
+        return pytesseract.image_to_string(images[0])
+
+    except Exception:
+        st.info("OCR not available in this deployment environment — using text-only mode.")
+        return None
 
 
 # ---------- run tool ----------
@@ -102,8 +124,11 @@ if file and st.button("Run Income Statement Extraction"):
 
             text = pdf.pages[i].extract_text()
 
+            # OCR fallback only if needed
             if not text:
-                text = extract_text_with_ocr(pdf_bytes, page_num)
+                ocr_text = extract_text_with_ocr(pdf_bytes, page_num)
+                if ocr_text:
+                    text = ocr_text
 
             if text and not raw_preview:
                 raw_preview = text[:3000]
@@ -120,8 +145,10 @@ if file and st.button("Run Income Statement Extraction"):
 
         df = pd.DataFrame(all_rows)
 
-        # clean numeric values
+        # numeric clean
         df["value"] = df["value"].str.replace(",", "").astype(float)
+
+        df = df.sort_values(["line_item", "page"])
 
         st.subheader("Extracted Financial Lines")
         st.dataframe(df)
@@ -136,7 +163,7 @@ if file and st.button("Run Income Statement Extraction"):
 
     else:
 
-        st.warning("Structured rows not confidently detected.")
+        st.warning("Structured financial rows not detected.")
 
         if raw_preview:
             st.subheader("Raw Extracted Text Preview")
@@ -148,7 +175,7 @@ if file and st.button("Run Income Statement Extraction"):
                 "raw_text.txt"
             )
         else:
-            st.error("PDF appears image-only and OCR returned no readable text.")
+            st.error("No readable text found in this PDF.")
 
 
 # ---------- limitation note ----------
@@ -156,9 +183,10 @@ if file and st.button("Run Income Statement Extraction"):
 st.markdown("""
 ### ⚠️ Limitations
 
-• Deterministic parsing with OCR fallback  
-• Table column alignment may vary for scanned PDFs  
+• Deterministic parsing with optional OCR fallback  
+• Cloud deployment runs in text-only mode (no Poppler/Tesseract)  
+• Scanned tables may have partial structure  
 • First ~12 pages processed for speed  
-• Values copied exactly — no estimation or hallucination  
-• Designed for reliability and traceability over recall
+• Values are copied exactly — no guessing or hallucination  
+• Output keeps source text and page reference for verification
 """)
